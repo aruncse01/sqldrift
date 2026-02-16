@@ -68,10 +68,29 @@ def validate_query(
         missing_tables = referenced_tables - live_set
 
         if missing_tables:
+            parts: list[str] = []
+            available = sorted(live_set)
+
+            for table in sorted(missing_tables):
+                line = f"- Table '{table}' not found"
+
+                # Suggest similar tables
+                suggestions = [
+                    c for c in available
+                    if table in c or c in table
+                    or (len(table) >= 3 and table[:3] == c[:3])
+                ]
+                if suggestions:
+                    line += f". Did you mean: {', '.join(suggestions[:5])}"
+
+                parts.append(line)
+
+            parts.append(f"  Available tables: {', '.join(available)}")
+
+            detail_block = "\n".join(parts)
             return (
                 False,
-                f"Schema Drift Detected: The following tables were not found: "
-                f"{sorted(missing_tables)}",
+                f"Schema Drift Detected:\n{detail_block}",
             )
 
         return True, "Query is safe to execute."
