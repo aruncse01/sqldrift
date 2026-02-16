@@ -11,7 +11,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/sqldrift.git
+git clone https://github.com/aruncse01/sqldrift.git
 cd sqldrift
 
 # Create a virtual environment
