@@ -186,6 +186,11 @@ class ColumnValidator:
         """
         Validate that all columns referenced in a SQL query exist in the schema.
 
+        For qualified references (``table.col``), checks the specific table.
+        For unqualified references (``col``), checks against the tables in the
+        query's ``FROM`` / ``JOIN`` clauses.  Falls back to a global check only
+        when none of the ``FROM`` tables are known to the schema.
+
         Args:
             sql_query: The SQL query to validate.
             dialect: Optional SQL dialect for parsing.
@@ -197,16 +202,53 @@ class ColumnValidator:
             - ``(False, "Column Drift Detected: ...")`` -- missing columns.
             - ``(False, "Invalid SQL syntax: ...")`` -- parse failure.
         """
+        if not sql_query or not sql_query.strip():
+            return True, "All columns exist."
+
         try:
-            columns = self.extract_columns(sql_query, dialect=dialect)
+            expression = sqlglot.parse_one(sql_query, read=dialect)
         except Exception as e:
             return False, f"Invalid SQL syntax: {e}"
 
+        # ----- Build alias map AND collect FROM/JOIN tables -----
+        alias_map: dict[str, str] = {}
+        from_tables: set[str] = set()
+
+        for table_node in expression.find_all(sqlglot.exp.Table):
+            real_name = self._normalize(table_node.name)
+            alias = table_node.alias
+            if alias:
+                alias_map[self._normalize(alias)] = real_name
+            from_tables.add(real_name)
+
+        # ----- Extract column references -----
+        columns: list[tuple[Optional[str], str]] = []
+        seen: set[str] = set()
+
+        for col in expression.find_all(sqlglot.exp.Column):
+            col_name = col.name
+            table_ref = col.table if col.table else None
+
+            if table_ref:
+                norm_ref = self._normalize(table_ref)
+                real_table = alias_map.get(norm_ref, norm_ref)
+            else:
+                real_table = None
+
+            norm_col = self._normalize(col_name)
+            key = f"{real_table}.{norm_col}" if real_table else norm_col
+            if key not in seen:
+                seen.add(key)
+                columns.append((real_table, norm_col))
+
         if not columns:
-            # Could not extract columns (e.g., parse error or SELECT *)
             return True, "All columns exist."
 
+        # ----- Validate each column reference -----
         missing: list[str] = []
+
+        # Pre-compute which FROM tables are known to the schema
+        known_from_tables = [t for t in from_tables if t in self._schema]
 
         for table, col in columns:
             if table:
@@ -217,9 +259,17 @@ class ColumnValidator:
                 # If table not in schema, skip -- table-level drift is
                 # handled by SchemaValidator
             else:
-                # Unqualified reference: check if column exists in any table
-                if col not in self._column_lookup:
-                    missing.append(col)
+                # Unqualified reference: check against FROM-clause tables
+                if known_from_tables:
+                    found = any(
+                        col in self._schema[t] for t in known_from_tables
+                    )
+                    if not found:
+                        missing.append(col)
+                else:
+                    # No known FROM tables — fall back to global check
+                    if col not in self._column_lookup:
+                        missing.append(col)
 
         if missing:
             return (

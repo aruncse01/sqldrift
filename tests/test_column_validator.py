@@ -124,8 +124,23 @@ class TestColumnValidator:
         ok, msg = self.validator.validate("SELECT * FROM users")
         assert ok is True
 
-    def test_unqualified_column_exists_in_any_table(self):
+    def test_unqualified_column_exists_in_from_table(self):
+        # 'title' exists in 'products' which is the FROM table
         ok, msg = self.validator.validate("SELECT title FROM products")
+        assert ok is True
+
+    def test_unqualified_column_not_in_from_table(self):
+        # 'title' exists in 'products' but NOT in 'users' (the FROM table)
+        # FROM-clause aware validation should catch this
+        ok, msg = self.validator.validate("SELECT title FROM users")
+        assert ok is False
+        assert "title" in msg
+
+    def test_unqualified_column_in_joined_table(self):
+        # 'total' exists in 'orders' which is a joined table — should pass
+        ok, msg = self.validator.validate(
+            "SELECT name, total FROM users JOIN orders ON users.id = orders.user_id"
+        )
         assert ok is True
 
     def test_unqualified_column_missing(self):
