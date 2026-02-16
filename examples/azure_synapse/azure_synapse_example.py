@@ -47,24 +47,37 @@ def get_synapse_connection(server: str, database: str) -> pyodbc.Connection:
 # ---------------------------------------------------------------------------
 # Synapse: fetch all tables from a schema
 # ---------------------------------------------------------------------------
-def get_synapse_tables(
+# ---------------------------------------------------------------------------
+# Synapse: fetch schema (tables + columns)
+# ---------------------------------------------------------------------------
+def get_synapse_schema(
     conn: pyodbc.Connection,
     schema: str = "dbo",
-) -> list[str]:
-    """Return all table and view names from a Synapse SQL pool schema."""
+) -> dict[str, dict[str, list[str]]]:
+    """
+    Return a schema dictionary compatible with ColumnValidator.
+    Format: {table: {"columns": [col1, ...], "types": [type1, ...]}}
+    """
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT TABLE_SCHEMA + '.' + TABLE_NAME
-        FROM INFORMATION_SCHEMA.TABLES
+        SELECT TABLE_SCHEMA + '.' + TABLE_NAME, COLUMN_NAME, DATA_TYPE
+        FROM INFORMATION_SCHEMA.COLUMNS
         WHERE TABLE_SCHEMA = ?
-        ORDER BY TABLE_NAME
+        ORDER BY TABLE_NAME, ORDINAL_POSITION
         """,
         (schema,),
     )
-    tables = [row[0] for row in cursor.fetchall()]
+    
+    schema_dict = {}
+    for table, col, dtype in cursor.fetchall():
+        if table not in schema_dict:
+            schema_dict[table] = {"columns": [], "types": []}
+        schema_dict[table]["columns"].append(col)
+        schema_dict[table]["types"].append(dtype)
+
     cursor.close()
-    return tables
+    return schema_dict
 
 
 # ---------------------------------------------------------------------------
@@ -88,15 +101,17 @@ def main():
     print(f"Connecting to {SYNAPSE_SERVER}...")
     conn = get_synapse_connection(SYNAPSE_SERVER, SYNAPSE_DATABASE)
 
-    # 2. Fetch live tables
-    print(f"Fetching tables from schema '{SYNAPSE_SCHEMA}'...")
-    live_tables = get_synapse_tables(conn, schema=SYNAPSE_SCHEMA)
-    print(f"Found {len(live_tables)} tables: {live_tables[:5]}...\n")
+    # 2. Fetch live schema
+    print(f"Fetching schema from '{SYNAPSE_SCHEMA}'...")
+    schema = get_synapse_schema(conn, schema=SYNAPSE_SCHEMA)
+    print(f"Found {len(schema)} tables.\n")
 
-    # 3. Create a cached validator (schema-qualified)
-    validator = CachedSchemaValidator(
-        live_tables,
-        preserve_schema=True,
+    # 3. Create a cached validator
+    # Note: CachedColumnValidator handles both table and column checks
+    from sqldrift import CachedColumnValidator
+    validator = CachedColumnValidator(
+        schema,
+        case_sensitive=False,  # SQL Server is typically case-insensitive
         cache_size=256,
     )
 

@@ -10,13 +10,13 @@ When AI agents or automated pipelines generate SQL, they may reference tables th
 
 ## Features
 
-- 🔍 **Schema drift detection** — identifies missing tables before query execution
-- 🧠 **CTE-aware** — correctly ignores Common Table Expressions
-- 🔤 **Case-insensitive matching** (configurable)
-- 📛 **Schema-qualified name support** — handles `schema.table` references
-- ⚡ **Optimized for scale** — class-based validator with O(1) lookups for 4,000+ tables
-- 🗄️ **LRU caching** — up to **282x speedup** for repeated queries
-- 🗃️ **Multi-dialect** — PostgreSQL, MySQL, BigQuery, and more via sqlglot
+- **Schema drift detection** — identifies missing tables before query execution
+- **CTE-aware** — correctly ignores Common Table Expressions
+- **Case-insensitive matching** (configurable)
+- **Schema-qualified name support** — handles `schema.table` references
+- **Optimized for scale** — class-based validator with O(1) lookups for 4,000+ tables
+- **LRU caching** — up to **282x speedup** for repeated queries
+- **Multi-dialect** — PostgreSQL, MySQL, BigQuery, and more via sqlglot
 
 ## Installation
 
@@ -62,6 +62,40 @@ validator = SchemaValidator(live_tables)
 # Validate many queries — the table set is built once
 success, message = validator.validate("SELECT * FROM users")
 ```
+
+## Column-Level Drift Detection
+
+While the standard validator checks for missing tables, `ColumnValidator` checks for missing columns. This requires providing a schema definition with column names.
+
+```python
+from sqldrift import ColumnValidator
+
+# Define your schema (table -> columns)
+schema = {
+    "users": {
+        "columns": ["id", "name", "email", "created_at"],
+        "types": ["INTEGER", "VARCHAR", "VARCHAR", "TIMESTAMP"], # optional
+    },
+    "orders": {
+        "columns": ["id", "user_id", "total"],
+    },
+}
+
+validator = ColumnValidator(schema)
+
+# Valid query
+success, msg = validator.validate("SELECT name FROM users")
+# (True, "All columns exist.")
+
+# Invalid query (column 'tier' missing)
+success, msg = validator.validate("SELECT tier FROM users")
+# (False, "Column Drift Detected: The following columns were not found: ['tier']")
+```
+
+### Features
+- **Qualified names**: Handles `table.column` and alias references (`u.name`) correctly.
+- **Suggestions**: Offers specific column names if a mismatch is close (e.g. `user_id` vs `userid`).
+- **Caching**: Use `CachedColumnValidator` for high-performance repeated validation.
 
 ### Cached validator (best for repeated queries)
 

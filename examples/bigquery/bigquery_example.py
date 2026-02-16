@@ -27,11 +27,36 @@ BQ_DATASET = "analytics"
 # ---------------------------------------------------------------------------
 # BigQuery: fetch all tables from a dataset
 # ---------------------------------------------------------------------------
-def get_bigquery_tables(project: str, dataset: str) -> list[str]:
-    """Return all table names from a BigQuery dataset."""
+# ---------------------------------------------------------------------------
+# BigQuery: fetch schema (tables + columns)
+# ---------------------------------------------------------------------------
+def get_bigquery_schema(project: str, dataset: str) -> dict[str, dict[str, list[str]]]:
+    """
+    Return a schema dictionary compatible with ColumnValidator.
+    Format: {table: {"columns": [col1, ...], "types": [type1, ...]}}
+    """
     client = bigquery.Client(project=project)
-    dataset_ref = f"{project}.{dataset}"
-    return [table.table_id for table in client.list_tables(dataset_ref)]
+    
+    # Query INFORMATION_SCHEMA.COLUMNS
+    query = f"""
+        SELECT table_name, column_name, data_type
+        FROM `{project}.{dataset}.INFORMATION_SCHEMA.COLUMNS`
+        ORDER BY table_name, ordinal_position
+    """
+    rows = client.query(query).result()
+
+    schema_dict = {}
+    for row in rows:
+        table = row.table_name
+        col = row.column_name
+        dtype = row.data_type
+
+        if table not in schema_dict:
+            schema_dict[table] = {"columns": [], "types": []}
+        schema_dict[table]["columns"].append(col)
+        schema_dict[table]["types"].append(dtype)
+
+    return schema_dict
 
 
 # ---------------------------------------------------------------------------
@@ -49,19 +74,22 @@ def execute_on_bigquery(query: str, project: str) -> list[dict]:
 # Main: validate-then-execute pipeline
 # ---------------------------------------------------------------------------
 def main():
-    # 1. Fetch live tables from BigQuery
-    print(f"Fetching tables from BigQuery dataset '{BQ_DATASET}'...")
-    live_tables = get_bigquery_tables(GCP_PROJECT, BQ_DATASET)
-    print(f"Found {len(live_tables)} tables: {live_tables[:5]}...\n")
+    # 1. Fetch live schema from BigQuery
+    print(f"Fetching schema from BigQuery dataset '{BQ_DATASET}'...")
+    schema = get_bigquery_schema(GCP_PROJECT, BQ_DATASET)
+    print(f"Found {len(schema)} tables.\n")
 
     # 2. Create a cached validator
-    validator = CachedSchemaValidator(live_tables, cache_size=256)
+    # Note: CachedColumnValidator handles both table and column checks
+    from sqldrift import CachedColumnValidator
+    validator = CachedColumnValidator(schema, cache_size=256)
 
     # 3. Validate queries before execution
     queries = [
         "SELECT * FROM events WHERE event_date > '2025-01-01'",
         "SELECT u.name, COUNT(*) FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.name",
-        "SELECT * FROM nonexistent_table",  # Will fail validation
+        "SELECT tier FROM users",           # Will fail (missing column)
+        "SELECT * FROM nonexistent_table",  # Will fail (missing table)
     ]
 
     for query in queries:

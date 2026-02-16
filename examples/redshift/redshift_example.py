@@ -85,35 +85,54 @@ def run_query(
 # ---------------------------------------------------------------------------
 # Redshift: fetch all tables from a schema
 # ---------------------------------------------------------------------------
-def get_redshift_tables(schema: str = SCHEMA, **kwargs) -> list[str]:
-    """Return all table names from a Redshift schema via the Data API."""
+# ---------------------------------------------------------------------------
+# Redshift: fetch schema (tables + columns)
+# ---------------------------------------------------------------------------
+def get_redshift_schema(schema: str = SCHEMA, **kwargs) -> dict[str, dict[str, list[str]]]:
+    """
+    Return a schema dictionary from Redshift via the Data API.
+    Format: {table: {"columns": [col1, ...], "types": [type1, ...]}}
+    """
+    # Query information_schema.columns for column details
     rows = run_query(
-        f"SELECT table_name FROM information_schema.tables "
+        f"SELECT table_name, column_name, data_type "
+        f"FROM information_schema.columns "
         f"WHERE table_schema = '{schema}' "
-        f"AND table_type IN ('BASE TABLE', 'VIEW') "
-        f"ORDER BY table_name",
+        f"ORDER BY table_name, ordinal_position",
         **kwargs,
     )
-    return [row[0] for row in rows]
+    
+    schema_dict = {}
+    for row in rows:
+        table, col, dtype = row[0], row[1], row[2]
+        if table not in schema_dict:
+            schema_dict[table] = {"columns": [], "types": []}
+        schema_dict[table]["columns"].append(col)
+        schema_dict[table]["types"].append(dtype)
+
+    return schema_dict
 
 
 # ---------------------------------------------------------------------------
 # Main: validate-then-execute pipeline
 # ---------------------------------------------------------------------------
 def main():
-    # 1. Fetch live tables via the Data API
-    print(f"Fetching tables from Redshift schema '{SCHEMA}'...")
-    live_tables = get_redshift_tables()
-    print(f"Found {len(live_tables)} tables: {live_tables[:5]}...\n")
+    # 1. Fetch live schema via the Data API
+    print(f"Fetching schema from Redshift schema '{SCHEMA}'...")
+    schema = get_redshift_schema()
+    print(f"Found {len(schema)} tables.\n")
 
     # 2. Create a cached validator
-    validator = CachedSchemaValidator(live_tables, cache_size=256)
+    # Note: CachedColumnValidator handles both table and column checks
+    from sqldrift import CachedColumnValidator
+    validator = CachedColumnValidator(schema, cache_size=256)
 
     # 3. Validate queries before execution
     queries = [
         "SELECT * FROM events WHERE event_date > '2025-01-01'",
         "SELECT u.name, COUNT(*) FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.name",
-        "SELECT * FROM nonexistent_table",  # Will fail validation
+        "SELECT tier FROM users",           # Will fail (missing column)
+        "SELECT * FROM nonexistent_table",  # Will fail (missing table)
     ]
 
     for query in queries:
@@ -126,6 +145,13 @@ def main():
             # print(f"   Returned {len(results)} rows")
         else:
             print(f"FAIL: {msg}")
+            
+            if "Column Drift" in msg:
+                 # Check for 'tier' specifically for the example
+                if "tier" in msg:
+                    suggestions = validator.suggest_alternatives("tier")
+                    if suggestions:
+                        print(f"      Did you mean: {', '.join(suggestions)}?")
 
     # 4. Show cache stats
     print(f"\nCache info: {validator.get_cache_info()}")

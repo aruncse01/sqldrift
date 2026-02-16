@@ -29,7 +29,8 @@ sqldrift/
 ├── src/sqldrift/
 │   ├── __init__.py          # Public API exports
 │   ├── validator.py         # Stateless validate_query() function
-│   └── optimized.py         # SchemaValidator & CachedSchemaValidator classes
+│   ├── optimized.py         # SchemaValidator & CachedSchemaValidator classes
+│   └── column_validator.py  # ColumnValidator & CachedColumnValidator classes
 ├── tests/
 │   └── test_validator.py    # pytest suite (20 tests across 3 test classes)
 ├── benchmarks/
@@ -50,6 +51,7 @@ sqldrift/
 |--------|---------|
 | `validator.py` | Stateless `validate_query()` — parses SQL via **sqlglot**, extracts physical table references (skipping CTEs), and checks them against a provided table list. |
 | `optimized.py` | `SchemaValidator` — class-based validator that pre-computes a normalized `set` for O(1) lookups. `CachedSchemaValidator` — extends it with `functools.lru_cache` for repeated-query speedups (~282×). |
+| `column_validator.py` | `ColumnValidator` — checks for column existence via schema definitions. Supports qualified names (`table.col`) and alias resolution. |
 
 ### How Validation Works
 

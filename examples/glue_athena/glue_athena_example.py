@@ -30,14 +30,20 @@ AWS_REGION = "us-east-1"
 # ---------------------------------------------------------------------------
 # Glue Catalog: fetch all tables (paginated)
 # ---------------------------------------------------------------------------
-def get_glue_tables(
+# ---------------------------------------------------------------------------
+# Glue Catalog: fetch schema (tables + columns)
+# ---------------------------------------------------------------------------
+def get_glue_schema(
     database: str,
     catalog_id: str | None = None,
     region: str = AWS_REGION,
-) -> list[str]:
-    """Return all table names from a Glue Catalog database."""
+) -> dict[str, dict[str, list[str]]]:
+    """
+    Return a schema dictionary from Glue Data Catalog.
+    Format: {table: {"columns": [col1, ...], "types": [type1, ...]}}
+    """
     client = boto3.client("glue", region_name=region)
-    tables: list[str] = []
+    schema_dict = {}
     paginator = client.get_paginator("get_tables")
 
     params: dict = {"DatabaseName": database}
@@ -45,9 +51,27 @@ def get_glue_tables(
         params["CatalogId"] = catalog_id
 
     for page in paginator.paginate(**params):
-        tables.extend(t["Name"] for t in page["TableList"])
+        for table in page["TableList"]:
+            table_name = table["Name"]
+            columns = []
+            types = []
+            
+            # Extract columns from StorageDescriptor
+            # Note: Partition keys are separate in Glue, check 'PartitionKeys' if needed
+            cols_def = table.get("StorageDescriptor", {}).get("Columns", [])
+            for col in cols_def:
+                columns.append(col["Name"])
+                types.append(col["Type"])
+                
+            # Add partition keys as columns too because they are queryable
+            part_keys = table.get("PartitionKeys", [])
+            for pk in part_keys:
+                columns.append(pk["Name"])
+                types.append(pk["Type"])
 
-    return tables
+            schema_dict[table_name] = {"columns": columns, "types": types}
+
+    return schema_dict
 
 
 # ---------------------------------------------------------------------------
@@ -88,19 +112,22 @@ def execute_on_athena(
 # Main: validate-then-execute pipeline
 # ---------------------------------------------------------------------------
 def main():
-    # 1. Fetch live tables from Glue Catalog
-    print(f"Fetching tables from Glue database '{GLUE_DATABASE}'...")
-    live_tables = get_glue_tables(GLUE_DATABASE)
-    print(f"Found {len(live_tables)} tables: {live_tables[:5]}...\n")
+    # 1. Fetch live schema from Glue Catalog
+    print(f"Fetching schema from Glue database '{GLUE_DATABASE}'...")
+    schema = get_glue_schema(GLUE_DATABASE)
+    print(f"Found {len(schema)} tables.\n")
 
-    # 2. Create a cached validator (reuse across many queries)
-    validator = CachedSchemaValidator(live_tables, cache_size=256)
+    # 2. Create a cached validator
+    # Note: CachedColumnValidator handles both table and column checks
+    from sqldrift import CachedColumnValidator
+    validator = CachedColumnValidator(schema, cache_size=256)
 
     # 3. Validate queries before execution
     queries = [
         "SELECT * FROM events WHERE event_date > '2025-01-01'",
         "SELECT u.name, COUNT(*) FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.name",
-        "SELECT * FROM nonexistent_table",  # Will fail validation
+        "SELECT tier FROM users",           # Will fail (missing column)
+        "SELECT * FROM nonexistent_table",  # Will fail (missing table)
     ]
 
     for query in queries:
@@ -113,6 +140,13 @@ def main():
             # print(f"   Athena execution ID: {exec_id}")
         else:
             print(f"FAIL: {msg}")
+            
+            if "Column Drift" in msg:
+                # Check for 'tier' specifically for the example
+                if "tier" in msg:
+                    suggestions = validator.suggest_alternatives("tier")
+                    if suggestions:
+                        print(f"      Did you mean: {', '.join(suggestions)}?")
 
     # 4. Show cache stats
     print(f"\nCache info: {validator.get_cache_info()}")

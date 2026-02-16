@@ -31,22 +31,34 @@ SCHEMA = "public"
 # ---------------------------------------------------------------------------
 # PostgreSQL: fetch all tables from a schema
 # ---------------------------------------------------------------------------
-def get_postgres_tables(conn, schema: str = SCHEMA) -> list[str]:
-    """Return all table and view names from a PostgreSQL schema."""
+# ---------------------------------------------------------------------------
+# PostgreSQL: fetch schema (tables + columns)
+# ---------------------------------------------------------------------------
+def get_postgres_schema(conn, schema: str = SCHEMA) -> dict[str, dict[str, list[str]]]:
+    """
+    Return a schema dictionary compatible with ColumnValidator.
+    Format: {table: {"columns": [col1, col2, ...], "types": [type1, ...]}}
+    """
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT table_name
-        FROM information_schema.tables
+        SELECT table_name, column_name, data_type
+        FROM information_schema.columns
         WHERE table_schema = %s
-          AND table_type IN ('BASE TABLE', 'VIEW')
-        ORDER BY table_name
+        ORDER BY table_name, ordinal_position
         """,
         (schema,),
     )
-    tables = [row[0] for row in cursor.fetchall()]
+    
+    schema_dict = {}
+    for table, col, dtype in cursor.fetchall():
+        if table not in schema_dict:
+            schema_dict[table] = {"columns": [], "types": []}
+        schema_dict[table]["columns"].append(col)
+        schema_dict[table]["types"].append(dtype)
+
     cursor.close()
-    return tables
+    return schema_dict
 
 
 # ---------------------------------------------------------------------------
@@ -70,22 +82,27 @@ def main():
     print(f"Connecting to {PG_CONFIG['host']}:{PG_CONFIG['port']}/{PG_CONFIG['database']}...")
     conn = psycopg2.connect(**PG_CONFIG)
 
-    # 2. Fetch live tables
-    print(f"Fetching tables from schema '{SCHEMA}'...")
-    live_tables = get_postgres_tables(conn)
-    print(f"Found {len(live_tables)} tables: {live_tables[:5]}...\n")
+    # 2. Fetch live schema
+    print(f"Fetching schema from '{SCHEMA}'...")
+    schema = get_postgres_schema(conn)
+    print(f"Found {len(schema)} tables.")
 
     # 3. Create a cached validator
-    validator = CachedSchemaValidator(live_tables, cache_size=256)
+    # Note: ColumnValidator checks columns; SchemaValidator checks tables.
+    # Included ColumnValidator handles both if table exists in schema.
+    from sqldrift import CachedColumnValidator
+    validator = CachedColumnValidator(schema, cache_size=256)
 
     # 4. Validate queries before execution
     queries = [
         "SELECT * FROM events WHERE event_date > '2025-01-01'",
         "SELECT u.name, COUNT(*) FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.name",
-        "SELECT * FROM nonexistent_table",  # Will fail validation
+        "SELECT tier FROM users",           # Will fail (missing column)
+        "SELECT * FROM nonexistent_table",  # Will fail (missing table)
     ]
 
     for query in queries:
+        # validate() returns (success, message)
         success, msg = validator.validate(query, dialect="postgres")
 
         if success:
@@ -95,6 +112,15 @@ def main():
             # print(f"   Returned {len(results)} rows")
         else:
             print(f"FAIL: {msg}")
+            
+            # Suggest alternatives if it's a column error
+            if "Column Drift" in msg:
+                # Extract the missing column name from the message or query context
+                # For demo purposes, we'll just check if 'tier' is missing
+                if "tier" in msg:
+                    suggestions = validator.suggest_alternatives("tier")
+                    if suggestions:
+                        print(f"      Did you mean: {', '.join(suggestions)}?")
 
     # 5. Show cache stats
     print(f"\nCache info: {validator.get_cache_info()}")
