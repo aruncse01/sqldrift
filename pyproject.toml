@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sqldrift"
-version = "0.1.2"
+version = "0.1.4"
 description = "Detect schema drift before your SQL queries blow up."
 readme = "README.md"
 license = {text = "MIT"}

@@ -245,7 +245,8 @@ class ColumnValidator:
             return True, "All columns exist."
 
         # ----- Validate each column reference -----
-        missing: list[str] = []
+        # Track missing columns with context for actionable error messages
+        missing_details: list[dict] = []
 
         # Pre-compute which FROM tables are known to the schema
         known_from_tables = [t for t in from_tables if t in self._schema]
@@ -255,7 +256,11 @@ class ColumnValidator:
                 # Qualified reference: check specific table
                 if table in self._schema:
                     if col not in self._schema[table]:
-                        missing.append(f"{table}.{col}")
+                        missing_details.append({
+                            "ref": f"{table}.{col}",
+                            "column": col,
+                            "table": table,
+                        })
                 # If table not in schema, skip -- table-level drift is
                 # handled by SchemaValidator
             else:
@@ -265,17 +270,49 @@ class ColumnValidator:
                         col in self._schema[t] for t in known_from_tables
                     )
                     if not found:
-                        missing.append(col)
+                        missing_details.append({
+                            "ref": col,
+                            "column": col,
+                            "table": known_from_tables[0] if len(known_from_tables) == 1 else None,
+                            "tables": known_from_tables,
+                        })
                 else:
                     # No known FROM tables — fall back to global check
                     if col not in self._column_lookup:
-                        missing.append(col)
+                        missing_details.append({
+                            "ref": col,
+                            "column": col,
+                            "table": None,
+                        })
 
-        if missing:
+        if missing_details:
+            parts: list[str] = []
+            for detail in missing_details:
+                col = detail["column"]
+                table = detail.get("table")
+
+                line = f"- Column '{col}' not found"
+
+                # Show which table it was checked against
+                if table and table in self._schema:
+                    available = sorted(self._schema[table])
+                    line += f" in table '{table}'"
+                    line += f". Available columns: {', '.join(available)}"
+                elif "tables" in detail:
+                    tables_str = ", ".join(detail["tables"])
+                    line += f" in tables: {tables_str}"
+
+                # Add suggestions
+                suggestions = self.suggest_alternatives(col)
+                if suggestions:
+                    line += f". Did you mean: {', '.join(suggestions[:5])}"
+
+                parts.append(line)
+
+            detail_block = "\n".join(parts)
             return (
                 False,
-                f"Column Drift Detected: The following columns were not found: "
-                f"{sorted(missing)}",
+                f"Column Drift Detected:\n{detail_block}",
             )
 
         return True, "All columns exist."
