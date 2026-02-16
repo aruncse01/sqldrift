@@ -67,6 +67,22 @@ sqldrift/
 | `case_sensitive` | `False` | Case-sensitive table name matching |
 | `preserve_schema` | `False` | Match full `schema.table` names instead of base name only |
 
+### Schema Sourcing
+
+sqldrift **does not store or connect to databases** — the caller provides the table list at runtime. This is a deliberate design choice to keep the library database-agnostic.
+
+In production, consumers typically source tables from:
+
+| Source | Method |
+|--------|--------|
+| PostgreSQL | `SELECT table_name FROM information_schema.tables` |
+| MySQL | `SHOW TABLES` |
+| SQLAlchemy | `inspect(engine).get_table_names()` |
+| Static config | JSON/YAML file with table names |
+| Data catalog | API call to metadata service |
+
+**Key design implication:** any new feature should maintain this stateless pattern. The library validates queries — it never manages schema state.
+
 ## Running Tests
 
 ```bash

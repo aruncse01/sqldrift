@@ -72,6 +72,51 @@ cached = CachedSchemaValidator(live_tables, cache_size=256)
 success, message = cached.validate(query)  # subsequent identical calls are cached
 ```
 
+## Where Do Table Lists Come From?
+
+sqldrift **does not connect to a database** — you provide the list of tables that currently exist in your schema. This keeps the library database-agnostic and flexible.
+
+Common ways to source your table list:
+
+```python
+# PostgreSQL via psycopg2
+cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+live_tables = [row[0] for row in cur.fetchall()]
+
+# MySQL via mysql-connector
+cur.execute("SHOW TABLES")
+live_tables = [row[0] for row in cur.fetchall()]
+
+# SQLAlchemy (any backend)
+from sqlalchemy import inspect
+live_tables = inspect(engine).get_table_names()
+
+# Static config (YAML, JSON, etc.)
+import json
+with open("schema.json") as f:
+    live_tables = json.load(f)["tables"]
+```
+
+Then pass the list to any validator:
+
+```python
+validator = SchemaValidator(live_tables)
+success, msg = validator.validate("SELECT * FROM users JOIN orders ON ...")
+```
+
+## Integration Examples
+
+Detailed guides with runnable scripts for specific database integrations:
+
+| Integration | Guide |
+|-------------|-------|
+| **AWS Glue Catalog + Athena** | [examples/glue_athena/](examples/glue_athena/) |
+| **GCP BigQuery** | [examples/bigquery/](examples/bigquery/) |
+| **Azure Synapse Analytics** | [examples/azure_synapse/](examples/azure_synapse/) |
+| **AWS Redshift (Data API)** | [examples/redshift/](examples/redshift/) |
+| **PostgreSQL** | [examples/postgresql/](examples/postgresql/) |
+| **MySQL** | [examples/mysql/](examples/mysql/) |
+
 ## API Reference
 
 ### `validate_query(sql_query, live_tables, *, dialect=None)`
